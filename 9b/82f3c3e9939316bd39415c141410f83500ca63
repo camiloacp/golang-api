@@ -1,0 +1,75 @@
+model/signup.go
+  1ac363b854364f26 1-6
+handler/route.go
+  1ac363b854364f26 1-40
+storage/gorm_person.go
+  1ac363b854364f26 1-90
+authorization/token.go
+  1ac363b854364f26 1-47
+handler/handler.go
+  1ac363b854364f26 1-15
+README.md
+  1ac363b854364f26 1-429
+TODOS.md
+  1ac363b854364f26 1-192
+cmd/certificates/rsa-keys.md
+  1ac363b854364f26 1-56
+model/user.go
+  1ac363b854364f26 1-9
+model/login.go
+  1ac363b854364f26 1-15
+cmd/main.go
+  1ac363b854364f26 1-81
+model/person.go
+  1ac363b854364f26 1-34
+handler/response.go
+  1ac363b854364f26 1-35
+storage/gorm_login.go
+  1ac363b854364f26 1-53
+.gitignore
+  1ac363b854364f26 1-22
+docker-compose.yml
+  1ac363b854364f26 1-34
+storage/storage.go
+  1ac363b854364f26 1-122
+Dockerfile
+  1ac363b854364f26 1-13
+.env.example
+  1ac363b854364f26 1-6
+handler/person.go
+  1ac363b854364f26 1-234
+go.mod
+  1ac363b854364f26 1-27
+handler/signup.go
+  1ac363b854364f26 1-67
+cmd/seed/main.go
+  1ac363b854364f26 1-43
+authorization/certificates.go
+  1ac363b854364f26 1-51
+middleware/middleware.go
+  1ac363b854364f26 1-72
+handler/login.go
+  1ac363b854364f26 1-65
+model/model.go
+  1ac363b854364f26 1-18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "9b82f3c3e9939316bd39415c141410f83500ca63",
+  "prompts": {
+    "1ac363b854364f26": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "31098e34-898e-4b99-b4a2-ec7950e2c0c3",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "fury install",
+      "messages": [],
+      "total_additions": 1876,
+      "total_deletions": 0,
+      "accepted_lines": 1876,
+      "overriden_lines": 0
+    }
+  }
+}
