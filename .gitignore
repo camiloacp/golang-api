@@ -1,0 +1,22 @@
+# Auto-memory privada de Claude Code (no commitear).
+.claude/
+
+# Claves RSA — NUNCA commitear material privado, y por simetría tampoco la pública.
+# El proyecto incluye instrucciones para regenerar el par en cmd/certificates/rsa-keys.md.
+*.pem
+
+# Variables de entorno reales (mantener .env.example como template).
+.env
+.env.local
+
+# Binarios compilados (Go produce binarios sin extensión).
+/golang-api
+/seed
+*.exe
+
+# IDE / editor
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
