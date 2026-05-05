@@ -1,21 +1,20 @@
 # TODOs pendientes
 
-Mejoras identificadas durante la implementación de la feature de autenticación, ordenadas por impacto. Cada ítem incluye contexto suficiente para retomarlo en una sesión futura sin necesidad de releer el chat.
+Mejoras identificadas durante la implementación de auth y la migración a Echo. Ordenadas por impacto. Cada ítem incluye contexto suficiente para retomarlo en una sesión futura sin releer el chat.
 
 ---
 
 ## 1. Reglas de complejidad de password
 
-**Estado actual**: `model/signup.go` valida solo `required,min=8,max=72` con `go-playground/validator`. No hay requisito de mayúsculas, dígitos, símbolos, etc.
+**Estado actual**: `model/signup.go` valida solo `required,min=8,max=72`. No hay requisito de mayúsculas, dígitos, símbolos.
 
-**Objetivo**: enforciar al menos 1 dígito + 1 mayúscula + 1 minúscula (o el set que se decida).
+**Objetivo**: enforciar al menos 1 dígito + 1 mayúscula + 1 minúscula.
 
 **Cómo encararlo**:
 
-`go-playground/validator` no trae estas reglas built-in. Hay que registrar un validator custom:
+`go-playground/validator` no trae estas reglas built-in. Hay que registrar un validator custom una sola vez (idealmente en el `init()` del paquete handler, sobre la instancia compartida `validate`):
 
 ```go
-// en algún init() del paquete handler o en un helper:
 validate.RegisterValidation("strongpwd", func(fl validator.FieldLevel) bool {
     s := fl.Field().String()
     var hasUpper, hasLower, hasDigit bool
@@ -36,157 +35,235 @@ Y en `model/signup.go`:
 Password string `json:"password" validate:"required,min=8,max=72,strongpwd"`
 ```
 
-**Decisiones a tomar antes**:
-- ¿Se aplica también al `Login`? Probablemente no (login solo valida formato; las reglas de complejidad solo se chequean al crear/cambiar password).
-- ¿Se requiere símbolo especial? Subjetivo — NIST SP 800-63B desaconseja reglas de complejidad excesivas y prefiere longitud + blacklist de passwords comunes. Considerar.
-- Mensaje de error al cliente: "password must contain at least one uppercase, one lowercase, and one digit".
+**Decisiones a tomar**:
+- Solo aplica a signup (login solo valida formato).
+- ¿Símbolo especial obligatorio? NIST SP 800-63B desaconseja reglas excesivas y prefiere longitud + blacklist de passwords comunes.
+- Mensaje al cliente: extender `fieldErrorMessage` en `handler/person.go` para mapear el tag `strongpwd` a un texto amigable.
 
 ---
 
 ## 2. Refresh tokens para sesiones largas
 
-**Estado actual**: `authorization/token.go:15` setea `ExpiresAt` a `time.Now().Add(time.Hour * 1)`. La duración del access token quedó en 1h (subida desde los 5 min iniciales). Falta el mecanismo de refresh para evitar que el usuario re-introduzca el password cada hora.
+**Estado actual**: `authorization/token.go` setea expiración en 1 hora. No hay refresh token, así que el usuario re-introduce el password cada hora.
 
-**Objetivo**: agregar refresh tokens para extender sesiones sin pedir credenciales nuevamente.
+**Objetivo**: agregar refresh tokens.
 
 **Cómo encararlo**:
 
-Patrón estándar de access + refresh:
-- **Access token**: corto (15min - 1h), va en cada request, se descarta si expira.
-- **Refresh token**: largo (7-30 días), se guarda persistido (en BD o cookie HttpOnly), permite obtener nuevos access tokens sin pedir password.
+Patrón estándar access + refresh:
+- **Access token**: corto (15min – 1h), va en cada request.
+- **Refresh token**: largo (7–30 días), persistido, permite obtener nuevos access tokens.
 
-Estructura aproximada:
-1. Nuevo modelo `RefreshToken` en `model/` con `UserID`, `Token` (random secure), `ExpiresAt`, `RevokedAt`.
-2. Endpoint `POST /v1/auth/refresh` que recibe el refresh token, valida que no esté expirado/revocado, y emite un nuevo access token.
-3. Endpoint `POST /v1/auth/logout` que revoca el refresh token (set `RevokedAt = NOW()`).
-4. En `/v1/login`, devolver ambos tokens en el response.
+Estructura:
+1. Modelo `RefreshToken` con `UserID`, `Token` (random secure), `ExpiresAt`, `RevokedAt`.
+2. `POST /v1/auth/refresh` recibe el refresh token, valida, emite access token nuevo.
+3. `POST /v1/auth/logout` revoca el refresh token.
+4. `/v1/login` devuelve ambos en el response.
 
 **Decisiones**:
-- ¿Refresh token va en body, header, o cookie HttpOnly? Cookie HttpOnly es más seguro contra XSS pero menos cómodo para clientes no-browser.
-- ¿Se permite reutilización de refresh token o token rotation? Rotation (emitir un refresh token nuevo cada uso) es más seguro pero requiere más bookkeeping.
+- ¿Body, header o cookie HttpOnly? Cookie HttpOnly es más segura contra XSS pero menos cómoda para clientes no-browser.
+- ¿Token rotation (emitir refresh nuevo en cada uso)? Más seguro, requiere bookkeeping.
 
 ---
 
 ## 3. Auto-login post-signup
 
-**Estado actual**: `POST /v1/signup` retorna `201 {"message_type":"message","message":"User created","data":{"id": <uint>}}`. El cliente debe llamar a `/v1/login` después.
+**Estado actual**: `POST /v1/signup` retorna `201 {"data":{"id": <uint>}}`. El cliente debe llamar a `/v1/login` después.
 
-**Objetivo**: que el signup retorne directamente el JWT como hace login, ahorrando un round-trip.
+**Objetivo**: que signup retorne directamente el JWT.
 
 **Cómo encararlo**:
 
-En `handler/signup.go`, después del `s.storage.CreateUser(&user)` exitoso:
+En `handler/signup.go`, después del `s.storage.CreateUser(&user)`:
 
 ```go
 token, err := authorization.GenerateToken(&model.Login{Email: data.Email, Password: data.Password})
 if err != nil {
     log.Printf("signup: generating token: %v", err)
-    // Decisión: ¿200 con error o 201 sin token? Probablemente 201 con campo
-    // vacío para indicar que el usuario sí se creó pero hay que loguear.
+    // Devolver 201 igual: el usuario sí se creó, pero sin token.
+    return c.JSON(http.StatusCreated,
+        newResponse(Message, "User created (login required)", map[string]any{"id": user.ID}))
 }
 
-responseJSON(w, http.StatusCreated,
+return c.JSON(http.StatusCreated,
     newResponse(Message, "User created", map[string]any{"id": user.ID, "token": token}))
 ```
 
-**Trade-off**: signup ahora depende del subsistema de tokens, así que un fallo de certificados rompe signup también. Hoy son endpoints independientes — esto los acopla.
+**Trade-off**: signup pasa a depender del subsistema de tokens (un fallo de certificados rompe ambos endpoints). Hoy son independientes.
 
 ---
 
 ## 4. Rate limiting en `/signup` y `/login`
 
-**Estado actual**: ningún endpoint tiene rate limiting. `/signup` permite registrar miles de cuentas en segundos; `/login` permite fuerza bruta de passwords.
+**Estado actual**: ningún endpoint tiene rate limiting. `/signup` permite registrar miles de cuentas en segundos; `/login` permite fuerza bruta.
 
-**Objetivo**: limitar requests por IP (y/o por email en el caso de `/login`).
+**Objetivo**: limitar requests por IP (y/o email para `/login`).
 
-**Cómo encararlo**:
+**Cómo encararlo (con Echo)**:
 
-Opciones de menor a mayor complejidad:
-
-1. **Middleware in-memory por IP** con `golang.org/x/time/rate.Limiter`. Suficiente para una sola instancia. Se pierde el estado al reiniciar.
-2. **Redis-backed** con un counter por `IP+endpoint+window`. Funciona con múltiples instancias detrás de un load balancer.
-3. **Servicio externo** (Cloudflare, AWS WAF) — out-of-process.
-
-Para empezar, opción 1:
+Echo trae `middleware.RateLimiter` built-in. Implementación in-memory por IP:
 
 ```go
-// middleware/ratelimit.go
-func RateLimit(rps float64, burst int) http.HandlerFunc {
-    limiters := sync.Map{} // map[string]*rate.Limiter por IP
-    return func(next http.HandlerFunc) http.HandlerFunc {
-        return func(w http.ResponseWriter, r *http.Request) {
-            ip, _, _ := net.SplitHostPort(r.RemoteAddr)
-            l, _ := limiters.LoadOrStore(ip, rate.NewLimiter(rate.Limit(rps), burst))
-            if !l.(*rate.Limiter).Allow() {
-                http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
-                return
-            }
-            next(w, r)
-        }
-    }
+import echomw "github.com/labstack/echo/v4/middleware"
+
+// En cmd/main.go, ANTES de registrar las rutas, o aplicado solo a signup/login:
+loginRateLimiter := echomw.RateLimiterWithConfig(echomw.RateLimiterConfig{
+    Store: echomw.NewRateLimiterMemoryStoreWithConfig(
+        echomw.RateLimiterMemoryStoreConfig{
+            Rate:      rate.Limit(5.0/60.0), // 5 por minuto
+            Burst:     5,
+            ExpiresIn: 3 * time.Minute,
+        },
+    ),
+})
+```
+
+Y en `handler/route.go`, aplicarlo selectivamente:
+
+```go
+func RouteLogin(e *echo.Echo, storage Storage, rateLimiter echo.MiddlewareFunc) {
+    h := newLogin(storage)
+    e.POST("/v1/login", h.login, rateLimiter)
 }
 ```
 
-Y aplicarlo en `route.go` con `Chain(... RateLimit(1, 5), ...)` para `/login` y `/signup`.
+**Opciones por escala**:
+1. **In-memory** (Echo built-in): suficiente para una sola instancia. Se pierde el estado al reiniciar.
+2. **Redis-backed**: para múltiples instancias detrás de un load balancer. Hay que implementar un `Store` custom o usar paquetes como `go-redis-rate`.
+3. **Servicio externo** (Cloudflare, AWS WAF): out-of-process.
 
 **Decisiones**:
-- ¿Por IP o por email? Por IP es más simple, por email previene mejor fuerza bruta dirigida.
-- ¿Qué thresholds? Para `/login`: ~5 intentos por minuto por IP. Para `/signup`: ~3 por hora por IP.
+- ¿IP, email o ambos? IP es simple, email previene mejor brute force dirigido. Combinarlos es lo más seguro.
+- Thresholds sugeridos:
+  - `/login`: 5 intentos/min por IP, 3 fallidos/hora por email.
+  - `/signup`: 3/hora por IP.
 
 ---
 
-## 5. Limpieza de la sección "Arquitectura" del README
+## 5. Tests automatizados
 
-**Estado actual**: `README.md` líneas 5-29 describen la arquitectura con paths que ya no existen:
-- Menciona `main.go` en raíz → ahora está en `cmd/main.go`.
-- Menciona `pkg/person/` → ese paquete ya no existe.
-- Menciona `memory.go` (repositorio en memoria) → no existe.
-- No menciona `handler/`, `middleware/`, `authorization/`, `cmd/seed/`.
+**Estado actual**: tests unitarios y de integración están **completamente ausentes**. Ningún archivo `*_test.go` en el repo.
 
-**Objetivo**: que la documentación refleje el estado real del proyecto.
+**Objetivo**: cobertura mínima antes de escalar features.
 
 **Cómo encararlo**:
 
-Reescribir la sección "Arquitectura" con la estructura real:
+Echo tiene un patrón muy testeable porque expone `e.ServeHTTP(rec, req)` directamente sin levantar un servidor:
 
-```
-golang-api/
-├── cmd/
-│   ├── main.go              # Entrypoint: certificados + DB + routers + server
-│   └── seed/
-│       └── main.go          # Binario one-shot para crear usuarios admin
-├── model/
-│   ├── login.go             # DTO Login + Claim + sentinels de auth
-│   ├── signup.go            # DTO Signup
-│   ├── user.go              # Entidad User (BD)
-│   ├── person.go            # Entidades Person + Community
-│   └── model.go             # Errores de dominio
-├── handler/
-│   ├── handler.go           # Interfaz Storage
-│   ├── login.go             # POST /v1/login
-│   ├── signup.go            # POST /v1/signup
-│   ├── person.go            # CRUD de personas
-│   ├── route.go             # Registro de rutas con middlewares
-│   └── response.go          # Envelope JSON
-├── middleware/
-│   └── middleware.go        # Log, Authentication, Recover, Chain
-├── authorization/
-│   ├── token.go             # GenerateToken / ValidateToken (JWT RS256)
-│   └── certificates.go      # Carga claves RSA desde PEM
-└── storage/
-    ├── storage.go           # Store + fachadas + AutoMigrate
-    ├── gorm_person.go       # CRUD Person + Community
-    └── gorm_login.go        # IsLoginValid + Create User
+```go
+// handler/person_test.go
+func TestPerson_Create(t *testing.T) {
+    e := echo.New()
+    mockStorage := &mockStorage{}  // implementa Storage
+    h := newPerson(mockStorage)
+
+    body := `{"name":"Test","age":30}`
+    req := httptest.NewRequest(http.MethodPost, "/v1/persons/create", strings.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    rec := httptest.NewRecorder()
+    c := e.NewContext(req, rec)
+
+    err := h.create(c)
+    assert.NoError(t, err)
+    assert.Equal(t, http.StatusCreated, rec.Code)
+}
 ```
 
-Y actualizar también la tabla de "Capas" — sacar `pkg/person/` que no existe.
+Estrategia por capa:
+- **`handler/`**: con `httptest` + mock de `Storage`. Rápido, sin DB.
+- **`storage/`**: con `testcontainers-go` levantando Postgres real. Más lento pero válida queries reales.
+- **`authorization/`**: tests puros de `GenerateToken` / `ValidateToken` sin red.
+
+---
+
+## 6. Migrar `Logger` a `RequestLogger` con `slog` estructurado
+
+**Estado actual**: `cmd/main.go` usa `echomw.RequestLoggerWithConfig` que loguea con `log.Printf` en formato `method=X uri=Y status=Z latency=W`. Es texto plano.
+
+**Objetivo**: logs estructurados (JSON) que se puedan parsear con Datadog / Loki / Grafana.
+
+**Cómo encararlo**:
+
+Cambiar el `LogValuesFunc` actual por uno que use `log/slog` (stdlib desde Go 1.21):
+
+```go
+import "log/slog"
+
+logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+e.Use(echomw.RequestLoggerWithConfig(echomw.RequestLoggerConfig{
+    LogStatus:  true,
+    LogURI:     true,
+    LogMethod:  true,
+    LogLatency: true,
+    LogValuesFunc: func(c echo.Context, v echomw.RequestLoggerValues) error {
+        logger.Info("http_request",
+            slog.String("method", v.Method),
+            slog.String("uri", v.URI),
+            slog.Int("status", v.Status),
+            slog.Duration("latency", v.Latency),
+        )
+        return nil
+    },
+}))
+```
+
+**Decisiones**:
+- ¿`slog` con handler JSON o un wrapper como `zerolog`? `slog` es stdlib y suficiente para empezar; `zerolog` es más rápido en hot paths.
+- ¿Filtrar health checks? Si en el futuro se agrega `/health`, agregar `if v.URI == "/health" { return nil }` para no inundar el log.
+
+---
+
+## 7. Eliminar el paquete `middleware/` (consolidación)
+
+**Estado actual**: tras la migración a Echo, el paquete `middleware/` solo contiene `Authentication`. Es un paquete con una sola función.
+
+**Objetivo**: mover `Authentication` a `authorization/middleware.go` y eliminar el paquete `middleware/`.
+
+**Justificación**: la auth ya depende del paquete `authorization` (`authorization.ValidateToken`). Tener un paquete separado solo para envolverla es ruido organizacional.
+
+**Cambios concretos**:
+1. Mover `func Authentication(...)` de `middleware/middleware.go` a un nuevo `authorization/middleware.go`.
+2. Actualizar imports en `handler/route.go`: `"golang-api/middleware"` → `"golang-api/authorization"` (con uso `authorization.Authentication`).
+3. Borrar `middleware/middleware.go` y la carpeta vacía.
+
+Bajo riesgo, alta limpieza.
+
+---
+
+## 8. URLs RESTful puras (`/v1/persons` vs `/v1/persons/create`)
+
+**Estado actual**: el grupo `/v1/persons/*` mezcla estilo "action" (`/create`, `/get-all`) con path params idiomáticos (`/:id`).
+
+**Objetivo**: full REST.
+
+| Hoy                          | REST puro              |
+| ---------------------------- | ---------------------- |
+| `POST /v1/persons/create`    | `POST /v1/persons`     |
+| `GET /v1/persons/get-all`    | `GET /v1/persons`      |
+| `GET /v1/persons/:id`        | (igual)                |
+| `PUT /v1/persons/:id`        | (igual)                |
+| `DELETE /v1/persons/:id`     | (igual)                |
+
+Echo distingue por método, así que `POST /v1/persons` y `GET /v1/persons` conviven sin conflicto.
+
+**Cambio en `handler/route.go`**:
+
+```go
+g := e.Group("/v1/persons", middleware.Authentication)
+g.POST("", h.create)         // POST /v1/persons
+g.GET("", h.getAll)          // GET /v1/persons
+g.GET("/:id", h.getByID)
+g.PUT("/:id", h.update)
+g.DELETE("/:id", h.delete)
+```
+
+**Es breaking change**: cualquier cliente actual (incluyendo la Postman collection) hay que actualizarlo.
 
 ---
 
 ## Notas generales
 
-- El bug del **espacio en `validate:"min=8, max=72"`** que costó tiempo de debug (panic → empty reply) está documentado implícitamente en la existencia del middleware `Recover`. Vale la pena agregar un comentario en `model/signup.go` recordando que los tags no toleran espacios entre validators.
-- El handler de `Login` y `Signup` comparten estructura casi idéntica (decode → validate → bcrypt/IsLoginValid → response). Si crece a 3+ endpoints similares, considerar un **service layer** que encapsule la lógica común y deje los handlers como adaptadores HTTP delgados.
-- Tests unitarios y de integración están **completamente ausentes**. Antes de escalar features, vale la pena introducir al menos:
-  - Tests de `storage/` con un Postgres en `testcontainers`.
-  - Tests de handler con `httptest` y un `Storage` mock.
+- **Bug del espacio en `validate:"min=8, max=72"`**: los tags de `go-playground/validator` no toleran espacios entre validators. Detectado por `Recover` middleware durante un panic. Vale agregar un comentario en `model/signup.go` recordándolo.
+- **Service layer ausente**: `Login` y `Signup` comparten estructura casi idéntica (decode → validate → bcrypt/IsLoginValid → response). Si crece a 3+ endpoints de auth, considerar extraer un `auth/service.go` y dejar los handlers como adaptadores HTTP delgados.
+- **DTOs vs entidades de BD**: `model.Person` y `model.User` se serializan tal cual incluyendo `gorm.Model` (`ID`, `CreatedAt`, `UpdatedAt`, `DeletedAt`). Cuando crezca la API, separar entidades de BD de DTOs de respuesta (ej. `PersonResponse`) para no filtrar internals del schema.

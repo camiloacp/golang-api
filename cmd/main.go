@@ -11,6 +11,9 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/labstack/echo/v4"
+	echomw "github.com/labstack/echo/v4/middleware"
 )
 
 func main() {
@@ -26,10 +29,29 @@ func main() {
 		log.Fatalf("migration failed: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	handler.RoutePerson(mux, store)
-	handler.RouteLogin(mux, store)
-	handler.RouteSignup(mux, store)
+	e := echo.New()
+
+	// Middlewares globales — corren en TODAS las rutas, en este orden:
+	//   1. Recover:       atrapa panics y devuelve 500 limpio.
+	//   2. RequestLogger: loguea cada request (método, URI, status, latencia).
+	//   3. BodyLimit:     rechaza bodies > 1 MiB (reemplaza http.MaxBytesReader).
+	e.Use(echomw.Recover())
+	e.Use(echomw.RequestLoggerWithConfig(echomw.RequestLoggerConfig{
+		LogStatus:  true,
+		LogURI:     true,
+		LogMethod:  true,
+		LogLatency: true,
+		LogValuesFunc: func(c echo.Context, v echomw.RequestLoggerValues) error {
+			log.Printf("method=%s uri=%s status=%d latency=%s",
+				v.Method, v.URI, v.Status, v.Latency)
+			return nil
+		},
+	}))
+	e.Use(echomw.BodyLimit("1M"))
+
+	handler.RouteLogin(e, store)
+	handler.RoutePerson(e, store)
+	handler.RouteSignup(e, store)
 
 	// Usamos http.Server explícito (en vez del atajo http.ListenAndServe)
 	// porque necesitamos acceder a Shutdown() para el graceful shutdown.
@@ -37,7 +59,7 @@ func main() {
 	// abren conexiones y mandan headers muy lento para agotar el pool.
 	srv := &http.Server{
 		Addr:              ":8080",
-		Handler:           mux,
+		Handler:           e,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

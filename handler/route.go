@@ -2,39 +2,32 @@ package handler
 
 import (
 	"golang-api/middleware"
-	"net/http"
+
+	"github.com/labstack/echo/v4"
 )
 
 // RoutePerson registra las rutas para las personas.
 //
 // Orden de middlewares (de afuera hacia adentro): Recover → Log → [Authentication] → handler.
 // Recover es el más externo para atrapar panics de cualquier middleware o del handler.
-func RoutePerson(mux *http.ServeMux, storage Storage) {
+func RoutePerson(e *echo.Echo, storage Storage) {
 	h := newPerson(storage)
-	mux.HandleFunc("POST /v1/persons/create",
-		middleware.Chain(h.create, middleware.Recover, middleware.Log, middleware.Authentication))
-	mux.HandleFunc("GET /v1/persons/get-all",
-		middleware.Chain(h.getAll, middleware.Recover, middleware.Log))
-	mux.HandleFunc("PUT /v1/persons/update",
-		middleware.Chain(h.update, middleware.Recover, middleware.Log))
-	mux.HandleFunc("DELETE /v1/persons/delete",
-		middleware.Chain(h.delete, middleware.Recover, middleware.Log))
-	mux.HandleFunc("GET /v1/persons/get-by-id",
-		middleware.Chain(h.getByID, middleware.Recover, middleware.Log))
+	g := e.Group("/v1/persons", middleware.Authentication)
+	g.POST("", h.create)
+	g.GET("", h.getAll)
+	g.GET("/:id", h.getByID)
+	g.PUT("/:id", h.update)
+	g.DELETE("/:id", h.delete)
 }
 
-// RouteLogin registra la ruta de autenticación.
-func RouteLogin(mux *http.ServeMux, storage Storage) {
+// RouteLogin registra la ruta de autenticación. Es pública (sin Authentication).
+func RouteLogin(e *echo.Echo, storage Storage) {
 	h := newLogin(storage)
-	mux.HandleFunc("POST /v1/login",
-		middleware.Chain(h.login, middleware.Recover, middleware.Log))
+	e.POST("/v1/login", h.login)
 }
 
-// RouteSignup registra la ruta de registro de usuarios.
-// Es pública: NO va envuelta en middleware.Authentication, por la misma
-// razón que /v1/login — sería un huevo-y-gallina pedir token para crear cuenta.
-func RouteSignup(mux *http.ServeMux, storage Storage) {
+// RouteSignup registra la ruta de registro. Es pública (sin Authentication).
+func RouteSignup(e *echo.Echo, storage Storage) {
 	h := newSignup(storage)
-	mux.HandleFunc("POST /v1/signup",
-		middleware.Chain(h.signup, middleware.Recover, middleware.Log))
+	e.POST("/v1/signup", h.signup)
 }

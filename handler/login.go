@@ -1,12 +1,13 @@
 package handler
 
 import (
-	"encoding/json"
 	"errors"
 	"golang-api/authorization"
 	"golang-api/model"
 	"log"
 	"net/http"
+
+	"github.com/labstack/echo/v4"
 )
 
 type login struct {
@@ -17,24 +18,14 @@ func newLogin(s Storage) login {
 	return login{s}
 }
 
-func (l *login) login(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		responseJSON(w, http.StatusMethodNotAllowed,
-			newResponse(Error, "Method not allowed", nil))
-		return
-	}
-
+func (l *login) login(c echo.Context) error {
 	data := model.Login{}
-	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
-		responseJSON(w, http.StatusBadRequest,
-			newResponse(Error, "Invalid request body", nil))
-		return
+	if err := c.Bind(&data); err != nil {
+		return c.JSON(http.StatusBadRequest, newResponse(Error, "Invalid request body", nil))
 	}
 
 	if err := validate.Struct(data); err != nil {
-		responseJSON(w, http.StatusBadRequest,
-			newResponse(Error, "Validation errors", nil))
-		return // ← faltaba acá
+		return c.JSON(http.StatusBadRequest, newResponse(Error, "Validation errors", nil))
 	}
 
 	// Validación de credenciales contra BD.
@@ -42,24 +33,17 @@ func (l *login) login(w http.ResponseWriter, r *http.Request) {
 	// Cualquier otro error = falla de infraestructura → 500.
 	if err := l.storage.IsLoginValid(data); err != nil {
 		if errors.Is(err, model.ErrInvalidCredentials) {
-			responseJSON(w, http.StatusUnauthorized,
-				newResponse(Error, err.Error(), nil))
-			return
+			return c.JSON(http.StatusUnauthorized, newResponse(Error, err.Error(), nil))
 		}
 		log.Printf("login: validating credentials: %v", err)
-		responseJSON(w, http.StatusInternalServerError,
-			newResponse(Error, "Internal error", nil))
-		return
+		return c.JSON(http.StatusInternalServerError, newResponse(Error, "Internal error", nil))
 	}
 
 	token, err := authorization.GenerateToken(&data)
 	if err != nil {
 		log.Printf("login: generating token: %v", err)
-		responseJSON(w, http.StatusInternalServerError,
-			newResponse(Error, "Could not generate token", nil))
-		return
+		return c.JSON(http.StatusInternalServerError, newResponse(Error, "Could not generate token", nil))
 	}
 
-	responseJSON(w, http.StatusOK,
-		newResponse(Message, "Login OK", token))
+	return c.JSON(http.StatusOK, newResponse(Message, "Login OK", token))
 }
