@@ -45,5 +45,5 @@ func (l *login) login(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, newResponse(Error, "Could not generate token", nil))
 	}
 
-	return c.JSON(http.StatusOK, newResponse(Message, "Login OK", token))
+	return c.JSON(http.StatusOK, newResponse(Message, "Login OK", model.LoginToken{Token: token}))
 }

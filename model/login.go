@@ -9,6 +9,10 @@ type Login struct {
 	Password string `json:"password" validate:"required,min=8"`
 }
 
+type LoginToken struct {
+	Token string `json:"token"`
+}
+
 type Claim struct {
 	Email string `json:"email"`
 	jwt.RegisteredClaims
